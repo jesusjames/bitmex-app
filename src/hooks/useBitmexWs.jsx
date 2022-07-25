@@ -1,19 +1,20 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import socket from '../socket';
 import { ACTIONS } from '../constants';
 
+let timeout;
 export const useBitmexWs = () => {
   const [connected, setConnected] = useState(false);
   const [partial, setPartial] = useState([]);
+  const queu = useRef([]);
 
   const deletePartial = useCallback((data) => {
     console.log('delete', data);
     const newPartial = [...partial];
-    const result = newPartial.filter((partial) => {
+    return newPartial.filter((partial) => {
       const itemExistsInPartial = data.some(item => partial.id === item.id);
       return !itemExistsInPartial;
     });
-    return result;
   }, [partial]);
 
   const insertPartial = useCallback((data) => {
@@ -23,17 +24,20 @@ export const useBitmexWs = () => {
     return newPartial;
   }, [partial]);
 
-  const updatePartial = (data, partial) => {
+  const updatePartial = useCallback((data) => {
+    console.log('update', data);
     const newPartial = [...partial];
-    const result = [...newPartial].map((partial) => {
-      const element = data.find(element => partial.id = element.id);
-      return element ? element : partial;
-    })
-    return result;
-  }
+    return newPartial.map((partial) => {
+      const element = data.find(element => partial.id === element.id);
+      return element ? {...partial, ...element} : partial;
+    });
+  }, [partial]);
 
   const closeConnection = () => {
     socket.close();
+    if(timeout){
+      clearTimeout(timeout);
+    }
   }
 
   const changeSymbol = (symbol = 'XBTUSD') => {
@@ -62,14 +66,34 @@ export const useBitmexWs = () => {
       setConnected(true);
     };
 
-    console.log('partial', partial);
-
     socket.onmessage = (event) => {
       const responseData = JSON.parse(event.data);
       const { action, data, table } = responseData;
       if(action === ACTIONS.PARTIAL && table === "orderBookL2_25"){
         setPartial(data);
       }
+      if((action === ACTIONS.DELETE || action === ACTIONS.INSERT || action === ACTIONS.UPDATE) && table === "orderBookL2_25") {
+        enqueue(responseData);
+      }
+    };
+
+    socket.onclose = () => {
+      setConnected(false);
+    };
+
+    return () => {
+      if(connected){
+        socket.close();
+      }
+    }
+  }, [connected]);
+
+  useEffect(() => {
+    timeout = setTimeout(() => {
+      console.log('execute action message');
+      const firstMessage = queu.current.shift();
+      if(!firstMessage) return;
+      const { action, data } = firstMessage;
       if(action === ACTIONS.DELETE && partial.length > 0) {
         const result = deletePartial(data);
         setPartial(result);
@@ -78,18 +102,21 @@ export const useBitmexWs = () => {
         const result = insertPartial(data);
         setPartial(result);
       }
-      /*if(action === ACTIONS.UPDATE && partial.length > 0) {
+      if(action === ACTIONS.UPDATE && partial.length > 0) {
         const result = updatePartial(data);
         setPartial(result);
-      }*/
-    };
+      }
+    }, 300);
+    return () => {
+      if(timeout){
+        clearTimeout(timeout);
+      }
+    }
+  }, [deletePartial, insertPartial, partial, updatePartial]);
 
-    socket.onclose = () => {
-      setConnected(false);
-    };
-  }, [deletePartial, insertPartial, partial]);
-
-
+  const enqueue = (message) => {
+    queu.current.push(message);
+  }
 
   return { connected, partial, closeConnection, changeSymbol, getAveragePrices};
 }
